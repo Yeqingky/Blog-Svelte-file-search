@@ -1,0 +1,9 @@
+# 本地配置与密钥 (绝不提交)
+.env
+.env.*
+!.env.example
+
+# 构建产物
+/bin/
+*.exe
+*.log
