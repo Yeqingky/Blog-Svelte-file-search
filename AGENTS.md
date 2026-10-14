@@ -1,22 +1,22 @@
-# Repository Instructions
+# 仓库说明
 
-## Project
+## 项目
 
-This repository contains a standalone Go HTTP service that exposes allowlisted file search over a Meilisearch index. The service uses only the Go standard library.
+本仓库包含一个独立的 Go HTTP 服务, 通过 Meilisearch 索引提供基于允许列表的文件搜索. 服务仅使用 Go 标准库.
 
-## Development
+## 开发
 
-- Run focused checks with `go test ./...` and `go build ./...`.
-- Copy `.env.example` to an untracked `.env` and configure the service before running `go run .`.
-- Keep search credentials out of source files, examples, logs, and test fixtures.
-- Keep configured service and browser origins on `example.com` in committed content.
-- Search results must remain scoped to configured `SHARE_<sid>` paths and must not expose indexed physical parent paths.
-- Docker build context must exclude `.env*`, tests, and local docs; credentials must not enter image layers.
-- GHCR publishing uses the built-in `GITHUB_TOKEN` with `packages: write`, publishes `sha-<short>` on `main`, and `vX.Y.Z` plus `latest` for version tags.
+- 运行针对性检查: `go test ./...` 和 `go build ./...`.
+- 将 `.env.example` 复制为不纳入版本控制的 `.env`, 并配置服务后再运行 `go run .`.
+- 不得将搜索凭据写入源文件、示例、日志或测试夹具.
+- 已提交内容中的服务端和浏览器来源域名必须使用 `example.com`.
+- 搜索请求可以省略 `share`, 以查询所有已配置的 `SHARE_<sid>` 根目录. 每条命中都包含其 share ID, 以及相对于对应 share 链接的路径; 路径不得包含已配置的根目录前缀, 也不得暴露索引中的物理父路径. 每次搜索只向 Meilisearch 发起一次请求, 最多请求 1000 条结果; 需要保证索引的 `pagination.maxTotalHits` 设置至少为 1000.
+- Docker 构建上下文必须排除 `.env*`、测试文件和本地文档; 凭据不得进入镜像层.
+- GHCR 发布使用内置的 `GITHUB_TOKEN` 和 `packages: write` 权限. 在 `main` 分支发布 `sha-<short>` 标签; 对版本标签发布 `vX.Y.Z` 和 `latest`.
 
-## Runtime
+## 运行时
 
-- `/search` is the public search endpoint; `/healthz` probes Meilisearch.
-- The default listener is loopback-only. A local reverse proxy may set `X-Real-IP`; the service trusts that header only when the TCP peer is loopback.
-- Configured roots and their hashes are normalized and precomputed at startup. File roots and roots with no indexed direct children produce warnings.
-- Production Compose uses the GHCR image; `docker-compose-dev.yml` builds locally. Both inject the untracked `.env`, listen on `0.0.0.0:8099`, and publish host port `8099` on all interfaces; apply firewall or proxy restrictions as needed.
+- `/search` 是公开搜索端点; `/healthz` 用于探测 Meilisearch.
+- 默认监听地址仅限环回接口. 本地反向代理可以设置 `X-Real-IP`; 服务仅在 TCP 对端为环回地址时信任该请求头.
+- 已配置的根目录及其哈希会在启动时规范化并预先计算. 根路径是文件, 或根路径下没有已索引的直接子项时, 服务会输出警告.
+- 生产环境的 Compose 使用 GHCR 镜像; `docker-compose-dev.yml` 在本地构建镜像. 两者都会注入不纳入版本控制的 `.env`, 监听 `0.0.0.0:8099`, 并将主机的 `8099` 端口发布到所有网络接口; 请按需配置防火墙或代理限制.

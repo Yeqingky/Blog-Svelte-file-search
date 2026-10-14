@@ -8,7 +8,7 @@ import (
 	"net"
 	"net/http"
 	"path"
-	"strconv"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -29,6 +29,7 @@ type shareRoot struct {
 }
 
 type searchHit struct {
+	Share string `json:"share"`
 	Path  string `json:"path"`
 	Dir   string `json:"dir"`
 	Name  string `json:"name"`
@@ -37,12 +38,10 @@ type searchHit struct {
 }
 
 type searchResponse struct {
-	Share   string      `json:"share"`
-	Query   string      `json:"query"`
-	Page    int         `json:"page"`
-	PerPage int         `json:"perPage"`
-	Total   int64       `json:"total"`
-	Hits    []searchHit `json:"hits"`
+	Share string      `json:"share,omitempty"`
+	Query string      `json:"query"`
+	Total int64       `json:"total"`
+	Hits  []searchHit `json:"hits"`
 }
 
 type errorResponse struct {
@@ -171,19 +170,25 @@ func (a *API) handleSearch(writer http.ResponseWriter, request *http.Request, cl
 
 	values := request.URL.Query()
 	rawShare := strings.TrimSpace(values.Get("share"))
-	if rawShare == "" {
-		writeError(writer, http.StatusBadRequest, "share is required")
-		return
-	}
-	share, err := normalizeShareID(rawShare)
-	if err != nil {
-		writeError(writer, http.StatusNotFound, "share not found")
-		return
-	}
-	roots, ok := a.roots[share]
-	if !ok {
-		writeError(writer, http.StatusNotFound, "share not found")
-		return
+	share := ""
+	shareIDs := make([]string, 0, len(a.roots))
+	if rawShare != "" {
+		normalizedShare, err := normalizeShareID(rawShare)
+		if err != nil {
+			writeError(writer, http.StatusNotFound, "share not found")
+			return
+		}
+		if _, ok := a.roots[normalizedShare]; !ok {
+			writeError(writer, http.StatusNotFound, "share not found")
+			return
+		}
+		share = normalizedShare
+		shareIDs = append(shareIDs, normalizedShare)
+	} else {
+		for shareID := range a.roots {
+			shareIDs = append(shareIDs, shareID)
+		}
+		sort.Strings(shareIDs)
 	}
 
 	query := strings.TrimSpace(values.Get("q"))
@@ -193,32 +198,24 @@ func (a *API) handleSearch(writer http.ResponseWriter, request *http.Request, cl
 		return
 	}
 
-	page, err := parsePositiveInt(values.Get("page"), 1, 0)
-	if err != nil {
-		writeError(writer, http.StatusBadRequest, "page must be a positive integer")
-		return
-	}
-	perPage, err := parsePositiveInt(values.Get("per_page"), 20, 50)
-	if err != nil {
-		writeError(writer, http.StatusBadRequest, "per_page must be between 1 and 50")
-		return
-	}
 	dir, err := cleanShareDir(values.Get("dir"))
 	if err != nil {
 		writeError(writer, http.StatusBadRequest, "dir must stay within the share")
 		return
 	}
 
-	hashes := make([]string, 0, len(roots))
-	for _, root := range roots {
-		if dir == "" {
-			hashes = append(hashes, root.hash)
-			continue
+	hashes := make([]string, 0, len(shareIDs))
+	for _, shareID := range shareIDs {
+		for _, root := range a.roots[shareID] {
+			if dir == "" {
+				hashes = append(hashes, root.hash)
+				continue
+			}
+			hashes = append(hashes, hashPath(path.Join(root.path, dir)))
 		}
-		hashes = append(hashes, hashPath(path.Join(root.path, dir)))
 	}
 	filter := formatFilter("parent_path_hashes", hashes)
-	result, err := a.searchMeili(request.Context(), query, filter, page, perPage)
+	result, err := a.searchMeili(request.Context(), query, filter, maxMeiliSearchHits)
 	if err != nil {
 		a.logger.Printf("WARNING share=%q Meilisearch request failed: %v", share, err)
 		writeError(writer, http.StatusBadGateway, "search service unavailable")
@@ -227,30 +224,32 @@ func (a *API) handleSearch(writer http.ResponseWriter, request *http.Request, cl
 
 	hits := make([]searchHit, 0, len(result.Hits))
 	for _, hit := range result.Hits {
-		visiblePath, matched := clipHitPath(hit, roots)
-		if !matched {
-			continue
+		for _, shareID := range shareIDs {
+			visiblePath, matched := clipHitPath(hit, a.roots[shareID])
+			if !matched {
+				continue
+			}
+			dirName := path.Dir(visiblePath)
+			if dirName == "." {
+				dirName = ""
+			}
+			hits = append(hits, searchHit{
+				Share: shareID,
+				Path:  visiblePath,
+				Dir:   dirName,
+				Name:  hit.Name,
+				IsDir: hit.IsDir,
+				Size:  hit.Size,
+			})
+			break
 		}
-		dirName := path.Dir(visiblePath)
-		if dirName == "." {
-			dirName = ""
-		}
-		hits = append(hits, searchHit{
-			Path:  visiblePath,
-			Dir:   dirName,
-			Name:  hit.Name,
-			IsDir: hit.IsDir,
-			Size:  hit.Size,
-		})
 	}
 
 	writeJSON(writer, http.StatusOK, searchResponse{
-		Share:   share,
-		Query:   query,
-		Page:    page,
-		PerPage: perPage,
-		Total:   result.total(),
-		Hits:    hits,
+		Share: share,
+		Query: query,
+		Total: result.total(),
+		Hits:  hits,
 	})
 }
 
@@ -283,17 +282,6 @@ func (a *API) handleHealth(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	writeJSON(writer, http.StatusOK, map[string]string{"status": "available"})
-}
-
-func parsePositiveInt(raw string, fallback, maximum int) (int, error) {
-	if raw == "" {
-		return fallback, nil
-	}
-	value, err := strconv.Atoi(raw)
-	if err != nil || value < 1 || (maximum > 0 && value > maximum) {
-		return 0, fmt.Errorf("out of range")
-	}
-	return value, nil
 }
 
 func cleanShareDir(value string) (string, error) {
@@ -349,21 +337,12 @@ func relativeSharePath(fullPath string, roots []shareRoot) (string, bool) {
 	}
 
 	remainder := ""
-	if fullPath != bestRoot.path {
-		if bestRoot.path == "/" {
-			remainder = strings.TrimPrefix(fullPath, "/")
-		} else {
-			remainder = strings.TrimPrefix(fullPath, bestRoot.path+"/")
-		}
-	}
 	if bestRoot.path == "/" {
-		return remainder, remainder != ""
+		remainder = strings.TrimPrefix(fullPath, "/")
+	} else if fullPath != bestRoot.path {
+		remainder = strings.TrimPrefix(fullPath, bestRoot.path+"/")
 	}
-	base := path.Base(bestRoot.path)
-	if remainder == "" {
-		return base, true
-	}
-	return path.Join(base, remainder), true
+	return remainder, remainder != ""
 }
 
 func requestIP(request *http.Request) string {

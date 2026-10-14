@@ -76,11 +76,9 @@ func TestSearchScopesAndClipsResults(t *testing.T) {
 	cfg.Shares["demo"] = []string{"/example/share", "/other/alternate"}
 	api := NewAPI(cfg, backend.Client(), log.New(io.Discard, "", 0))
 	query := url.Values{
-		"share":    {"/@s/demo"},
-		"q":        {"  keyword  "},
-		"page":     {"2"},
-		"per_page": {"5"},
-		"dir":      {"folder/sub"},
+		"share": {"/@s/demo"},
+		"q":     {"  keyword  "},
+		"dir":   {"folder/sub"},
 	}
 	request := httptest.NewRequest(http.MethodGet, "/search?"+query.Encode(), nil)
 	request.Header.Set("Origin", "https://www.example.com")
@@ -93,8 +91,8 @@ func TestSearchScopesAndClipsResults(t *testing.T) {
 	if response.Header().Get("Access-Control-Allow-Origin") != "https://www.example.com" {
 		t.Fatal("allowed origin was not returned")
 	}
-	if received.Query != "keyword" || received.Page != 2 || received.HitsPerPage != 5 {
-		t.Fatalf("unexpected upstream pagination or query: %#v", received)
+	if received.Query != "keyword" || received.Limit != maxMeiliSearchHits {
+		t.Fatalf("unexpected upstream query or result limit: %#v", received)
 	}
 	if received.Filter != "(parent_path_hashes = '052b493fa2357ae5913112c1eb557688b10e2a65' OR parent_path_hashes = 'f17f19b6a4adddd50a84101bace5b87eb08638b9')" {
 		t.Fatalf("unexpected scope filter: %q", received.Filter)
@@ -107,20 +105,145 @@ func TestSearchScopesAndClipsResults(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if result.Share != "demo" || result.Query != "keyword" || result.Page != 2 || result.PerPage != 5 || result.Total != 2 {
+	if result.Share != "demo" || result.Query != "keyword" || result.Total != 2 {
 		t.Fatalf("unexpected response metadata: %#v", result)
+	}
+	var responseFields map[string]json.RawMessage
+	if err := json.Unmarshal(response.Body.Bytes(), &responseFields); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"page", "perPage"} {
+		if _, ok := responseFields[field]; ok {
+			t.Errorf("response includes obsolete field %q", field)
+		}
 	}
 	if len(result.Hits) != 2 {
 		t.Fatalf("expected two in-scope results, got %#v", result.Hits)
 	}
-	if result.Hits[0].Path != "share/folder/sub/match.txt" || result.Hits[0].Dir != "share/folder/sub" || result.Hits[0].Name != "match.txt" || result.Hits[0].Size != 123 {
+	if result.Hits[0].Share != "demo" || result.Hits[0].Path != "folder/sub/match.txt" || result.Hits[0].Dir != "folder/sub" || result.Hits[0].Name != "match.txt" || result.Hits[0].Size != 123 {
 		t.Fatalf("unexpected first result: %#v", result.Hits[0])
 	}
-	if result.Hits[1].Path != "alternate/folder/sub/second.txt" || !result.Hits[1].IsDir {
+	if result.Hits[1].Share != "demo" || result.Hits[1].Path != "folder/sub/second.txt" || !result.Hits[1].IsDir {
 		t.Fatalf("unexpected second result: %#v", result.Hits[1])
 	}
 	if strings.Contains(response.Body.String(), "/example/") || strings.Contains(response.Body.String(), "/other/") || strings.Contains(response.Body.String(), "leak.txt") {
 		t.Fatal("response exposed a physical path or an out-of-scope hit")
+	}
+}
+
+func TestSearchReturnsAllHitsInSingleQuery(t *testing.T) {
+	const resultCount = 75
+	var calls atomic.Int32
+	var received meiliSearchRequest
+	backend := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		calls.Add(1)
+		if err := json.NewDecoder(request.Body).Decode(&received); err != nil {
+			t.Errorf("decode upstream request: %v", err)
+		}
+		if received.Limit != maxMeiliSearchHits {
+			t.Errorf("expected upstream limit %d, got %d", maxMeiliSearchHits, received.Limit)
+		}
+
+		hits := make([]map[string]any, resultCount)
+		for index := range hits {
+			hits[index] = map[string]any{
+				"parent": "/example/share",
+				"name":   fmt.Sprintf("file-%02d.txt", index),
+				"is_dir": false,
+				"size":   index,
+			}
+		}
+		if err := json.NewEncoder(writer).Encode(struct {
+			TotalHits int              `json:"totalHits"`
+			Hits      []map[string]any `json:"hits"`
+		}{TotalHits: resultCount, Hits: hits}); err != nil {
+			t.Errorf("encode upstream response: %v", err)
+		}
+	}))
+	defer backend.Close()
+	api := NewAPI(testConfig(backend.URL), backend.Client(), log.New(io.Discard, "", 0))
+
+	request := httptest.NewRequest(http.MethodGet, "/search?share=demo&q=term", nil)
+	response := httptest.NewRecorder()
+	api.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d: %s", response.Code, response.Body.String())
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("expected one upstream query, got %d", calls.Load())
+	}
+
+	var result searchResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Total != resultCount || len(result.Hits) != resultCount {
+		t.Fatalf("expected all %d hits in one response, got total=%d hits=%d", resultCount, result.Total, len(result.Hits))
+	}
+	if result.Hits[0].Path != "file-00.txt" || result.Hits[resultCount-1].Path != "file-74.txt" {
+		t.Fatalf("unexpected first or last hit: first=%#v last=%#v", result.Hits[0], result.Hits[resultCount-1])
+	}
+}
+
+func TestSearchWithoutShareIncludesShareAndShareRelativePaths(t *testing.T) {
+	var received meiliSearchRequest
+	var calls atomic.Int32
+	backend := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		calls.Add(1)
+		if err := json.NewDecoder(request.Body).Decode(&received); err != nil {
+			t.Errorf("decode upstream request: %v", err)
+		}
+		_, _ = fmt.Fprint(writer, `{"totalHits":2,"hits":[{"parent":"/example/public-root/mc","name":"a.txt","is_dir":false,"size":10},{"parent":"/other/public-root/mc","name":"b.txt","is_dir":false,"size":20}]}`)
+	}))
+	defer backend.Close()
+
+	cfg := testConfig(backend.URL)
+	cfg.Shares = map[string][]string{
+		"alpha": {"/example/public-root"},
+		"beta":  {"/other/public-root"},
+	}
+	api := NewAPI(cfg, backend.Client(), log.New(io.Discard, "", 0))
+
+	query := url.Values{"q": {"example-query"}}
+	request := httptest.NewRequest(http.MethodGet, "/search?"+query.Encode(), nil)
+	response := httptest.NewRecorder()
+	api.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d: %s", response.Code, response.Body.String())
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("expected one cross-share upstream query, got %d", calls.Load())
+	}
+	if received.Query != "example-query" {
+		t.Fatalf("unexpected upstream query: %q", received.Query)
+	}
+	wantFilter := "(parent_path_hashes = '" + hashPath("/example/public-root") + "' OR parent_path_hashes = '" + hashPath("/other/public-root") + "')"
+	if received.Filter != wantFilter {
+		t.Fatalf("unexpected cross-share filter: %q", received.Filter)
+	}
+
+	var result searchResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := envelope["share"]; ok {
+		t.Fatal("q-only response must identify share on each hit, not at top level")
+	}
+	if result.Total != 2 || len(result.Hits) != 2 {
+		t.Fatalf("unexpected multi-share result count: total=%d hits=%#v", result.Total, result.Hits)
+	}
+	if result.Hits[0].Share != "alpha" || result.Hits[0].Path != "mc/a.txt" || result.Hits[0].Dir != "mc" {
+		t.Fatalf("unexpected alpha hit: %#v", result.Hits[0])
+	}
+	if result.Hits[1].Share != "beta" || result.Hits[1].Path != "mc/b.txt" || result.Hits[1].Dir != "mc" {
+		t.Fatalf("unexpected beta hit: %#v", result.Hits[1])
+	}
+	if strings.Contains(response.Body.String(), "public-root/") {
+		t.Fatal("share root prefix leaked into the returned paths")
 	}
 }
 
@@ -190,8 +313,6 @@ func TestSearchInputBoundaries(t *testing.T) {
 	}{
 		{name: "query too long", query: url.Values{"share": {"demo"}, "q": {strings.Repeat("界", 129)}}, status: http.StatusBadRequest},
 		{name: "missing query", query: url.Values{"share": {"demo"}}, status: http.StatusBadRequest},
-		{name: "per-page too large", query: url.Values{"share": {"demo"}, "q": {"term"}, "per_page": {"51"}}, status: http.StatusBadRequest},
-		{name: "page zero", query: url.Values{"share": {"demo"}, "q": {"term"}, "page": {"0"}}, status: http.StatusBadRequest},
 		{name: "unknown share", query: url.Values{"share": {"unknown"}, "q": {"term"}}, status: http.StatusNotFound},
 	}
 	for _, test := range cases {

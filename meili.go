@@ -15,15 +15,17 @@ import (
 	"strings"
 )
 
-const maxMeiliResponseBytes = 2 << 20
+const (
+	maxMeiliResponseBytes = 2 << 20
+	maxMeiliSearchHits    = 1000
+)
 
 var retrievedAttributes = []string{"parent", "name", "is_dir", "size"}
 
 type meiliSearchRequest struct {
 	Query                string   `json:"q"`
 	Filter               string   `json:"filter"`
-	Page                 int      `json:"page"`
-	HitsPerPage          int      `json:"hitsPerPage"`
+	Limit                int      `json:"limit"`
 	AttributesToRetrieve []string `json:"attributesToRetrieve"`
 }
 
@@ -53,12 +55,11 @@ func (response meiliSearchResponse) total() int64 {
 	return 0
 }
 
-func (a *API) searchMeili(ctx context.Context, query, filter string, page, perPage int) (meiliSearchResponse, error) {
+func (a *API) searchMeili(ctx context.Context, query, filter string, limit int) (meiliSearchResponse, error) {
 	requestBody := meiliSearchRequest{
 		Query:                query,
 		Filter:               filter,
-		Page:                 page,
-		HitsPerPage:          perPage,
+		Limit:                limit,
 		AttributesToRetrieve: retrievedAttributes,
 	}
 	body, err := json.Marshal(requestBody)
@@ -128,7 +129,7 @@ func (a *API) CheckShares(ctx context.Context) {
 	for _, sid := range shareIDs {
 		for _, root := range a.roots[sid] {
 			filter := formatFilter("parent_hash", []string{root.hash})
-			result, err := a.searchMeili(ctx, "", filter, 1, 1)
+			result, err := a.searchMeili(ctx, "", filter, 1)
 			if err != nil {
 				a.logger.Printf("WARNING share=%q root=%q index check failed: %v", sid, root.path, err)
 				continue
@@ -148,7 +149,7 @@ func (a *API) CheckShares(ctx context.Context) {
 
 func (a *API) shareRootIsFile(ctx context.Context, root shareRoot) bool {
 	filter := formatFilter("parent_hash", []string{root.parentHash})
-	result, err := a.searchMeili(ctx, path.Base(root.path), filter, 1, 50)
+	result, err := a.searchMeili(ctx, path.Base(root.path), filter, 50)
 	if err != nil {
 		return false
 	}

@@ -42,21 +42,27 @@ go run .
 
 ### `GET /search`
 
-必填参数为 `share` 和 `q`. `share` 可传分享 ID 或 `/@s/<sid>` 形式. 可选参数:
+必填参数为 `q`. 可选参数:
 
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
-| `page` | `1` | 正整数页码 |
-| `per_page` | `20` | 每页条数, 最大 `50` |
+| `share` | 空 | 省略时搜索所有已配置分享; 指定时限制到该分享. 可传分享 ID 或 `/@s/<sid>` 形式 |
 | `dir` | 空 | 分享内的相对目录, 不允许 `..` 越界 |
 
+每次搜索只向 Meilisearch 发起一次请求, 请求上限为 1000 条, 不提供分页参数. 命中数不超过 1000 时会完整返回; 超过时无法由当前服务一次全部返回. Meilisearch 索引的 `pagination.maxTotalHits` 默认值为 1000, 并且必须至少为 1000.
+
 ```sh
+# 搜索所有已配置分享
+curl --get 'http://127.0.0.1:8099/search' \
+  --data-urlencode 'q=jpg'
+
+# 限制到一个分享
 curl --get 'http://127.0.0.1:8099/search' \
   --data-urlencode 'share=demo' \
   --data-urlencode 'q=keyword'
 ```
 
-成功响应包含分享内相对路径 `path`、目录 `dir`、名称 `name`、目录标记 `isDir` 和大小 `size`; 不会返回 Meilisearch 文档中的真实 `parent` 路径.
+每个命中条目包含 `share` ID、`path` (相对分享链接根目录, 不含配置根目录前缀, 如 `public-root/`)、`dir`、名称 `name`、目录标记 `isDir` 和大小 `size`; 不返回 Meilisearch 文档中的真实 `parent` 路径. 指定 `share` 时顶层响应也包含 `share`.
 
 ### `GET /healthz`
 
