@@ -95,4 +95,4 @@ docker compose up -d
 - 推送符合数字格式的 `vX.Y.Z` tag 时发布 `vX.Y.Z` 与 `latest`.
 - Pull request 只构建镜像, 不推送.
 
-在仓库 Actions secrets 中配置有 GHCR 包发布权限的 `GH_PKG`. 非数字 `vX.Y.Z` tag 会被工作流拒绝.
+工作流使用 GitHub 内置的 `GITHUB_TOKEN` 和 `packages: write` 权限发布, 无需单独配置 token secret. 非数字 `vX.Y.Z` tag 会被工作流拒绝.

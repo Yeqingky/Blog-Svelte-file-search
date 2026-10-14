@@ -12,7 +12,7 @@ This repository contains a standalone Go HTTP service that exposes allowlisted f
 - Keep configured service and browser origins on `example.com` in committed content.
 - Search results must remain scoped to configured `SHARE_<sid>` paths and must not expose indexed physical parent paths.
 - Docker build context must exclude `.env*`, tests, and local docs; credentials must not enter image layers.
-- GHCR publishing uses the Actions secret `GH_PKG`, publishes `sha-<short>` on `main`, and `vX.Y.Z` plus `latest` for version tags.
+- GHCR publishing uses the built-in `GITHUB_TOKEN` with `packages: write`, publishes `sha-<short>` on `main`, and `vX.Y.Z` plus `latest` for version tags.
 
 ## Runtime
 
