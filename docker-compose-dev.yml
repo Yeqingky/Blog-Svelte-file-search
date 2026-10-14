@@ -1,0 +1,20 @@
+services:
+  file-search:
+    image: blog-svelte-file-search:dev
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      LISTEN_ADDR: "0.0.0.0:8099"
+    ports:
+      - "8099:8099"
+    init: true
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    stop_grace_period: 10s

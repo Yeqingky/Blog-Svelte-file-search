@@ -1,0 +1,10 @@
+.git
+.github
+.env
+.env.*
+docs/
+AGENTS.md
+README.md
+docker-compose.yml
+docker-compose-dev.yml
+*_test.go
